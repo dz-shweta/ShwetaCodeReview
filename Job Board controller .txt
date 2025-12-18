@@ -1,0 +1,250 @@
+public without sharing class JobBoardController {
+
+   @AuraEnabled(cacheable=true)
+    public static List<Job_Post__c> getJobBoardPosts() {
+        try {
+            // 1️⃣ Get Account RecordType Id dynamically (no hardcoding)
+            Schema.DescribeSObjectResult accDescribe =
+                Account.SObjectType.getDescribe();
+
+            Map<String, Schema.RecordTypeInfo> rtMap =
+                accDescribe.getRecordTypeInfosByDeveloperName();
+
+            Schema.RecordTypeInfo orgRtInfo = rtMap.get('Organization');
+
+            if (orgRtInfo == null) {
+                // Defensive coding – avoid unexpected empty UI
+                throw new AuraHandledException(
+                    'Organization Record Type not found on Account'
+                );
+            }
+
+            Id organizationRtId = orgRtInfo.getRecordTypeId();
+
+            // 2️⃣ Query only jobs whose Account is Organization type
+            return [
+                SELECT Id,
+                       Job_Title__c,
+                       Address__c,
+                       Country__c,
+                       Employee__c,
+                       State__c,
+                       Company__c,
+                       Company__r.Name,
+                       Company__r.RecordType.DeveloperName,
+                       CreatedDate
+                FROM Job_Post__c
+               WHERE Company__r.RecordTypeId = :organizationRtId
+                ORDER BY CreatedDate DESC
+            ];
+
+        } catch (Exception ex) {
+            throw new AuraHandledException(
+                'Unable to load Job records: ' + ex.getMessage()
+            );
+        }
+    }
+
+
+	@AuraEnabled
+    public static String saveBookmark(Id jobId) {
+    try {
+        User u = [
+            SELECT Id, ContactId
+            FROM User
+            WHERE Id = :UserInfo.getUserId()
+            LIMIT 1
+        ];
+
+        Integer existingCount = [
+            SELECT COUNT()
+            FROM Job_Bookmark__c
+            WHERE Job_Post__c = :jobId
+            AND (
+                UserJobBookmark__c = :u.Id
+                OR JobBookMarkContact__c = :u.ContactId
+            )
+        ];
+
+        if (existingCount > 0) {
+            return 'ALREADY_EXISTS';
+        }
+
+        Job_Bookmark__c jb = new Job_Bookmark__c(
+            Job_Post__c = jobId,
+            UserJobBookmark__c = u.Id
+        );
+
+        if (u.ContactId != null) {
+            jb.JobBookMarkContact__c = u.ContactId;
+        }
+
+        insert jb;
+        return 'SUCCESS';
+
+    } catch (Exception e) {
+        throw new AuraHandledException(e.getMessage());
+    }
+}
+
+
+	@AuraEnabled
+    public static String removeBookmark(Id jobId) {
+    try {
+        User u = [
+            SELECT Id, ContactId
+            FROM User
+            WHERE Id = :UserInfo.getUserId()
+            LIMIT 1
+        ];
+
+        List<Job_Bookmark__c> recs = [
+            SELECT Id
+            FROM Job_Bookmark__c
+            WHERE Job_Post__c = :jobId
+            AND (
+                UserJobBookmark__c = :u.Id
+                OR JobBookMarkContact__c = :u.ContactId
+            )
+            LIMIT 1
+        ];
+
+        if (!recs.isEmpty()) {
+            delete recs;
+        }
+        return 'SUCCESS';
+
+    } catch (Exception e) {
+        throw new AuraHandledException(
+            'Error removing bookmark: ' + e.getMessage()
+        );
+    }
+}
+	@AuraEnabled(cacheable=true)
+	public static List<Id> getUserBookmarks() {
+
+			User u = [
+				SELECT Id, ContactId
+				FROM User
+				WHERE Id = :UserInfo.getUserId()
+				LIMIT 1
+			];
+
+			List<Job_Bookmark__c> bookmarks = [
+				SELECT Job_Post__c
+				FROM Job_Bookmark__c
+				WHERE UserJobBookmark__c = :u.Id
+				OR JobBookMarkContact__c = :u.ContactId
+			];
+
+			List<Id> jobIds = new List<Id>();
+			for (Job_Bookmark__c jb : bookmarks) {
+				if (jb.Job_Post__c != null) {
+					jobIds.add(jb.Job_Post__c);
+				}
+			}
+			return jobIds;
+		}
+
+
+	@AuraEnabled(cacheable=true)
+	public static Job_Post__c getJobDetail(Id jobId) {
+			Job_Post__c job = [
+				SELECT
+					Id,
+					Job_Title__c,
+					Job_Description__c,
+					What_you_ll_do__c,
+					What_we_re_looking_for__c,
+					Employee__c,
+					State__c,
+					Country__c,
+					Link__c,
+					CreatedDate,
+					Company__r.Name
+				FROM Job_Post__c
+				WHERE Id = :jobId
+				LIMIT 1
+			];
+
+			// ✅ DEBUG OUTPUT
+			System.debug('JOB DETAIL RECORD => ' + job);
+			System.debug('JOB LINK VALUE => ' + job.Link__c);
+
+			return job;
+		}
+
+
+
+	@AuraEnabled(cacheable=true)
+    public static List<Job_Post__c> getRelatedCompanyJobs(Id jobId) {
+		Id companyId = [
+			SELECT Company__c
+			FROM Job_Post__c
+			WHERE Id = :jobId
+			LIMIT 1
+		].Company__c;
+
+		return [
+			SELECT
+				Id,
+				Job_Title__c,
+				State__c,
+				Country__c,
+				Employee__c,
+				CreatedDate,
+				Company__c,
+				Job_Description__c,
+				Company__r.Name
+			FROM Job_Post__c
+			WHERE Company__c = :companyId
+			AND Id != :jobId
+			ORDER BY CreatedDate DESC
+		];
+	}
+
+
+    @AuraEnabled(cacheable=true) 
+    public static Boolean isJobAlreadyBookmarked(Id jobId) {
+
+    User u = [
+        SELECT Id, ContactId
+        FROM User
+        WHERE Id = :UserInfo.getUserId()
+        LIMIT 1
+    ];
+
+    Integer countBookmarks = [
+        SELECT COUNT()
+        FROM Job_Bookmark__c
+        WHERE Job_Post__c = :jobId
+        AND (
+            UserJobBookmark__c = :u.Id
+            OR JobBookMarkContact__c = :u.ContactId
+        )
+    ];
+
+    return countBookmarks > 0;  
+    
+	}
+	@AuraEnabled(cacheable=true)
+	public static List<Job_Post__c> getMyPostedJobs() {
+
+		Id currentUserId = UserInfo.getUserId();
+
+		return [
+			SELECT Id,
+				Job_Title__c,
+				Country__c,
+				State__c,
+				Employee__c,
+				Company__c,
+				Company__r.Name,
+				CreatedDate
+			FROM Job_Post__c
+			WHERE CreatedById = :currentUserId
+			ORDER BY CreatedDate DESC
+		];
+	}
+
+}
